@@ -384,6 +384,35 @@ vmod_get(struct sess *sp, const char *name) {
 	return (NULL);
 }
 
+unsigned
+vmod_exists(struct sess *sp, const char *name) {
+	struct cookie *cookie, *tmp;
+	struct vmod_cookie *vcp = cobj_get(sp);
+	CHECK_OBJ_NOTNULL(vcp, VMOD_COOKIE_MAGIC);
+
+	VTAILQ_FOREACH_SAFE(cookie, &vcp->cookielist, list, tmp) {
+		if (strcmp(cookie->name, name) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+unsigned
+vmod_isempty(struct sess *sp, const char *name) {
+	struct cookie *cookie, *tmp;
+	struct vmod_cookie *vcp = cobj_get(sp);
+	CHECK_OBJ_NOTNULL(vcp, VMOD_COOKIE_MAGIC);
+
+	VTAILQ_FOREACH_SAFE(cookie, &vcp->cookielist, list, tmp) {
+		if (strcmp(cookie->name, name) == 0) {
+			char *cp;
+			for (cp = cookie->value; cp && isspace(*cp); cp++) ;
+			return !(cp && *cp != '\0');
+		}
+	}
+	return 1;
+}
 
 void
 vmod_delete(struct sess *sp, const char *name) {
