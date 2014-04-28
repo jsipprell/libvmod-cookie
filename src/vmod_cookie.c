@@ -53,7 +53,7 @@ struct vmod_cookie {
 static pthread_key_t key;
 static pthread_once_t key_is_initialized = PTHREAD_ONCE_INIT;
 
-static void set_cookie_ex(struct sess *sp, const char *name, const char *value,
+static void set_cookie_ex(const struct vrt_ctx *ctx, const char *name, const char *value,
 													const char *path, const char *expires, const char *domain,
 													unsigned int *flags);
 
@@ -78,32 +78,39 @@ cobj_clear(struct vmod_cookie *c) {
 static struct vmod_cookie *
 cobj_get(const struct vrt_ctx *ctx) {
 	struct vmod_cookie *vcp = pthread_getspecific(key);
+	uint32_t xid = 0xdeadbeef;
+
+
+	if(ctx->req && ctx->req->sp)
+		xid = ctx->req->sp->vxid & VSL_IDENTMASK;
+	else if(ctx->bo && ctx->bo->vsl && ctx->bo->vsl->wid)
+		xid = ctx->bo->vsl->wid & VSL_IDENTMASK;
 
 	if (!vcp) {
 		vcp = malloc(sizeof *vcp);
 		AN(vcp);
 		cobj_clear(vcp);
-		vcp->xid = ctx->req->sp->vxid;
+		vcp->xid = xid;
 		AZ(pthread_setspecific(key, vcp));
 	}
 
 	CHECK_OBJ_NOTNULL(vcp, VMOD_COOKIE_MAGIC);
 
-	if (vcp->xid != ctx->req->sp->vxid) {
+	if (vcp->xid != xid) {
 		// Reuse previously allocated storage
 		cobj_clear(vcp);
-		vcp->xid = ctx->req->sp->vxid;
+		vcp->xid = xid;
 	}
 
 	return (vcp);
 }
 
-void
-vmod_parse_resp(struct sess *sp, const char *cookieheader) {
+VCL_VOID
+vmod_parse_resp(const struct vrt_ctx *ctx, VCL_STRING cookieheader) {
 	char tokendata[MAX_COOKIESTRING];
 	char *token, *tokstate, *key, *sepindex;
 	char *dataptr = tokendata;
-	struct vmod_cookie *vcp = cobj_get(sp);
+	struct vmod_cookie *vcp = cobj_get(ctx);
 	CHECK_OBJ_NOTNULL(vcp, VMOD_COOKIE_MAGIC);
 	char *name = NULL;
 	char *value = NULL;
@@ -171,7 +178,7 @@ vmod_parse_resp(struct sess *sp, const char *cookieheader) {
 			domain = v;
 		else {
 			if(name && *name && value && *value) {
-				set_cookie_ex(sp, name, value, path, expires, domain, &flags);
+				set_cookie_ex(ctx, name, value, path, expires, domain, &flags);
 				i++;
 			}
 			name = value = path = expires = domain =  NULL;
@@ -182,7 +189,7 @@ vmod_parse_resp(struct sess *sp, const char *cookieheader) {
 	}
 
 	if(name && *name && value && *value) {
-		set_cookie_ex(sp, name, value, path, expires, domain, &flags);
+		set_cookie_ex(ctx, name, value, path, expires, domain, &flags);
 		i++;
 	}
 	VSL(SLT_VCL_Log, 0, "libvmod-cookie: parsed %i response cookies.", i);
@@ -245,12 +252,12 @@ vmod_parse(const struct vrt_ctx *ctx, VCL_STRING cookieheader) {
 }
 
 
-static void
-set_cookie_ex(struct sess *sp, const char *name, const char *value,
+VCL_VOID
+set_cookie_ex(const struct vrt_ctx *ctx, const char *name, const char *value,
               const char *path, const char *expires, const char *domain,
 							unsigned int *flags) {
 	struct cookie *cookie;
-	struct vmod_cookie *vcp = cobj_get(sp);
+	struct vmod_cookie *vcp = cobj_get(ctx);
 	CHECK_OBJ_NOTNULL(vcp, VMOD_COOKIE_MAGIC);
 
 	// Empty cookies should be ignored.
@@ -260,13 +267,13 @@ set_cookie_ex(struct sess *sp, const char *name, const char *value,
 	VTAILQ_FOREACH(cookie, &vcp->cookielist, list) {
 		if (strcmp(cookie->name, name) == 0) {
 			if (value && strlen(value) > 0)
-				cookie->value = WS_Dup(sp->ws, value);
+				cookie->value = WS_Printf(ctx->ws, "%s", value);
 			if (path) {
 				if (strlen(path) == 0)
 					cookie->path = NULL;
 				else {
 					cookie->type = e_cookie_resp;
-					cookie->path = WS_Dup(sp->ws, path);
+					cookie->path = WS_Printf(ctx->ws, "%s", path);
 				}
 			}
 			if (expires) {
@@ -274,7 +281,7 @@ set_cookie_ex(struct sess *sp, const char *name, const char *value,
 					cookie->expires = NULL;
 				else {
 					cookie->type = e_cookie_resp;
-					cookie->expires = WS_Dup(sp->ws, expires);
+					cookie->expires = WS_Printf(ctx->ws, "%s", expires);
 				}
 			}
 			if (domain) {
@@ -282,7 +289,7 @@ set_cookie_ex(struct sess *sp, const char *name, const char *value,
 					cookie->domain = NULL;
 				else {
 					cookie->type = e_cookie_resp;
-					cookie->domain = WS_Dup(sp->ws, domain);
+					cookie->domain = WS_Printf(ctx->ws, "%s", domain);
 				}
 			}
 			if (flags) {
@@ -294,9 +301,9 @@ set_cookie_ex(struct sess *sp, const char *name, const char *value,
 		}
 	}
 
-	cookie = (struct cookie *) WS_Alloc(sp->ws, sizeof(struct cookie));
-	cookie->name = WS_Dup(sp->ws, name);
-	cookie->value = WS_Dup(sp->ws, value);
+	cookie = (struct cookie *) WS_Alloc(ctx->ws, sizeof(struct cookie));
+	cookie->name = WS_Printf(ctx->ws, "%s", name);
+	cookie->value = WS_Printf(ctx->ws, "%s", value);
 	cookie->type = e_cookie_req;
 	cookie->path = NULL;
 	cookie->expires = NULL;
@@ -306,17 +313,17 @@ set_cookie_ex(struct sess *sp, const char *name, const char *value,
 	if (path) {
 		cookie->type = e_cookie_resp;
 		if (strlen(path) != 0)
-			cookie->path = WS_Dup(sp->ws, path);
+			cookie->path = WS_Printf(ctx->ws, "%s", path);
 	}
 	if (expires) {
 		cookie->type = e_cookie_resp;
 		if (strlen(expires) != 0)
-			cookie->expires = WS_Dup(sp->ws, expires);
+			cookie->expires = WS_Printf(ctx->ws, "%s", expires);
 	}
 	if (domain) {
 		cookie->type = e_cookie_resp;
 		if (strlen(domain) != 0)
-			cookie->domain = WS_Dup(sp->ws, domain);
+			cookie->domain = WS_Printf(ctx->ws, "%s", domain);
 	}
 	if (flags) {
 		cookie->type = e_cookie_resp;
@@ -325,10 +332,10 @@ set_cookie_ex(struct sess *sp, const char *name, const char *value,
 	VTAILQ_INSERT_TAIL(&vcp->cookielist, cookie, list);
 }
 
-void
-vmod_set_resp(struct sess *sp, const char *name, const char *value,
-														   const char *path, int expires,
-															 const char *domain)
+VCL_VOID
+vmod_set_resp(const struct vrt_ctx *ctx, VCL_STRING name, VCL_STRING value,
+														   VCL_STRING path, VCL_INT expires,
+															 VCL_STRING domain)
 {
   unsigned int flags = COOKIE_HTTP_ONLY;
 	const char *expires_str = NULL;
@@ -344,10 +351,10 @@ vmod_set_resp(struct sess *sp, const char *name, const char *value,
 
 		time(&now);
 		now += expires;
-		expires_str = VRT_time_string(sp, (double)now);
+		expires_str = VRT_TIME_string(ctx, (double)now);
 	}
 
-	set_cookie_ex(sp, name, value, path, expires_str, domain, &flags);
+	set_cookie_ex(ctx, name, value, path, expires_str, domain, &flags);
 }
 
 VCL_VOID
@@ -409,40 +416,36 @@ vmod_get(const struct vrt_ctx *ctx, VCL_STRING name) {
 	return (NULL);
 }
 
-unsigned
-vmod_exists(struct sess *sp, const char *name) {
+VCL_BOOL
+vmod_exists(const struct vrt_ctx *ctx, VCL_STRING name) {
 	struct cookie *cookie, *tmp;
-	struct vmod_cookie *vcp = cobj_get(sp);
-	CHECK_OBJ_NOTNULL(vcp, VMOD_COOKIE_MAGIC);
-
-	struct cookie *cookie, *tmp;
-	struct vmod_cookie *vcp = cobj_get(sp);
+	struct vmod_cookie *vcp = cobj_get(ctx);
 	CHECK_OBJ_NOTNULL(vcp, VMOD_COOKIE_MAGIC);
 
 	VTAILQ_FOREACH_SAFE(cookie, &vcp->cookielist, list, tmp) {
 		if (strcmp(cookie->name, name) == 0) {
 			char *cp;
 			for (cp = cookie->value; cp && isspace(*cp); cp++) ;
-			return !(cp && *cp != '\0');
+			return (cp && *cp != '\0');
 		}
 	}
-	return 1;
+	return 0;
 }
 
-unsigned
-vmod_isempty(struct sess *sp, const char *name) {
+VCL_BOOL
+vmod_isempty(const struct vrt_ctx *ctx, VCL_STRING name) {
 	struct cookie *cookie, *tmp;
-	struct vmod_cookie *vcp = cobj_get(sp);
+	struct vmod_cookie *vcp = cobj_get(ctx);
 	CHECK_OBJ_NOTNULL(vcp, VMOD_COOKIE_MAGIC);
 
 	VTAILQ_FOREACH_SAFE(cookie, &vcp->cookielist, list, tmp) {
 		if (strcmp(cookie->name, name) == 0) {
 			char *cp;
 			for (cp = cookie->value; cp && isspace(*cp); cp++) ;
-			return !(cp && *cp != '\0');
+			return (cp && *cp != '\0');
 		}
 	}
-	return 1;
+	return 0;
 }
 
 VCL_VOID
