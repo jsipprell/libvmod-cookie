@@ -7,9 +7,10 @@ Varnish Cookie Module
 ----------------------
 
 :Author: Lasse Karstensen
-:Date: 2013-07-12
+:Date: 2014-03-24
 :Version: 1.0
 :Manual section: 3
+
 
 SYNOPSIS
 ========
@@ -124,6 +125,28 @@ Example
 			std.log("cookie1 value is: " + cookie.get("cookie1"));
 		}
 
+isset
+-----
+
+Prototype
+        ::
+
+                isset(STRING cookiename)
+Return value
+	BOOL
+Description
+	Check if a given cookie is set in the internal vmod storage.
+
+Example
+        ::
+
+		import std;
+		sub vcl_recv {
+			cookie.parse("cookie1: value1; cookie2: value2;");
+			if (cookie.isset("cookie2")) {
+				std.log("cookie2 is set.");
+			}
+		}
 
 delete
 ------
@@ -264,4 +287,5 @@ COPYRIGHT
 This document is licensed under the same license as the
 libvmod-example project. See LICENSE for details.
 
-* Copyright (c) 2011-2013 Varnish Software
+* Copyright (c) 2011-2014 Varnish Software
+
